@@ -39,7 +39,6 @@ from scapy.utils6 import in6_6to4ExtractAddr, in6_isaddr6to4, \
 from scapy.base_classes import Gen, Net, BasePacket, Field_metaclass
 from scapy.error import warning
 import scapy.modules.six as six
-from scapy.modules.six.moves import range
 from scapy.modules.six import integer_types
 
 # Typing imports
@@ -280,7 +279,7 @@ class Field(Generic[I, M]):
         return copy.copy(self)
 
     def randval(self):
-        # type: () -> VolatileValue
+        # type: () -> VolatileValue[Any]
         """Return a volatile object whose value is both random and suitable for this field"""  # noqa: E501
         fmtt = self.fmt[-1]
         if fmtt in "BbHhIiQq":
@@ -295,7 +294,11 @@ class Field(Generic[I, M]):
                 value = int(self.fmt[1:-1])
             return RandBin(value)
         else:
-            warning("no random class for [%s] (fmt=%s).", self.name, self.fmt)
+            raise ValueError(
+                "no random class for [%s] (fmt=%s)." % (
+                    self.name, self.fmt
+                )
+            )
 
 
 class _FieldContainer(object):
@@ -1018,7 +1021,7 @@ class NBytesField(Field[int, List[int]]):
     def i2m(self, pkt, x):
         # type: (Optional[Packet], Optional[int]) -> List[int]
         if x is None:
-            return []
+            return [0] * self.sz
         x2m = list()
         for _ in range(self.sz):
             x2m.append(x % 256)
@@ -1380,10 +1383,10 @@ class StrFieldUtf16(StrField):
 
     def i2h(self, pkt, x):
         # type: (Optional[Packet], bytes) -> str
-        return bytes_encode(x).decode('utf-16')
+        return bytes_encode(x).decode('utf-16', errors="replace")
 
 
-K = TypeVar('K', List[BasePacket], BasePacket)
+K = TypeVar('K', List[BasePacket], BasePacket, Optional[BasePacket])
 
 
 class _PacketField(_StrField[K]):
@@ -1426,7 +1429,7 @@ class _PacketField(_StrField[K]):
         return remain, i
 
     def randval(self):
-        # type: () -> K
+        # type: () -> Packet
         from scapy.packet import fuzz
         return fuzz(self.cls())  # type: ignore
 
@@ -1435,7 +1438,7 @@ class PacketField(_PacketField[BasePacket]):
     pass
 
 
-class PacketLenField(PacketField):
+class PacketLenField(_PacketField[Optional[BasePacket]]):
     __slots__ = ["length_from"]
 
     def __init__(self,
@@ -1452,20 +1455,22 @@ class PacketLenField(PacketField):
                  pkt,  # type: Packet
                  s,  # type: bytes
                  ):
-        # type: (...) -> Tuple[bytes, Packet]
+        # type: (...) -> Tuple[bytes, Optional[Packet]]
         len_pkt = self.length_from(pkt)
-        try:
-            i = self.m2i(pkt, s[:len_pkt])
-        except Exception:
-            if conf.debug_dissector:
-                raise
-            i = conf.raw_layer(load=s[:len_pkt])
+        i = None
+        if len_pkt:
+            try:
+                i = self.m2i(pkt, s[:len_pkt])
+            except Exception:
+                if conf.debug_dissector:
+                    raise
+                i = conf.raw_layer(load=s[:len_pkt])
         return s[len_pkt:], i
 
 
 class PacketListField(_PacketField[List[BasePacket]]):
-    """PacketListField represents a series of Packet instances that might
-    occur right in the middle of another Packet field list.
+    """PacketListField represents a list containing a series of Packet instances
+    that might occur right in the middle of another Packet field.
     This field type may also be used to indicate that a series of Packet
     instances have a sibling semantic instead of a parent/child relationship
     (i.e. a stack of layers).
@@ -1708,10 +1713,9 @@ class StrFixedLenField(StrField):
     def randval(self):
         # type: () -> RandBin
         try:
-            len_pkt = self.length_from(None)  # type: ignore
+            return RandBin(self.length_from(None))  # type: ignore
         except Exception:
-            len_pkt = RandNum(0, 200)
-        return RandBin(len_pkt)
+            return RandBin(RandNum(0, 200))
 
 
 class StrFixedLenEnumField(StrFixedLenField):
@@ -1845,30 +1849,8 @@ class XLEStrLenField(XStrLenField):
         return x[:: -1]
 
 
-class StrLenFieldUtf16(StrLenField):
-    def h2i(self, pkt, x):
-        # type: (Optional[Packet], Optional[str]) -> bytes
-        return plain_str(x).encode('utf-16')[2:]
-
-    def any2i(self, pkt, x):
-        # type: (Optional[Packet], Any) -> bytes
-        if isinstance(x, six.text_type):
-            return self.h2i(pkt, x)
-        return super(StrLenFieldUtf16, self).any2i(pkt, x)
-
-    def i2repr(self, pkt, x):
-        # type: (Optional[Packet], bytes) -> str
-        try:
-            return plain_str(self.i2h(pkt, x))
-        except ValueError:
-            return plain_str(x) + " [invalid encoding]"
-
-    def i2h(self,
-            pkt,  # type: Optional[Packet]
-            x,  # type: bytes
-            ):
-        # type: (...) -> str
-        return bytes_encode(x).decode('utf-16')
+class StrLenFieldUtf16(StrLenField, StrFieldUtf16):
+    pass
 
 
 class BoundStrLenField(StrLenField):
@@ -2347,16 +2329,17 @@ class _EnumField(Field[Union[List[I], I], I]):
             s2i = self.s2i = {}
             self.i2s_cb = None
             self.s2i_cb = None
+            keys = []  # type: List[I]
             if isinstance(enum, list):
-                keys = list(range(len(enum)))
+                keys = list(range(len(enum)))  # type: ignore
             elif isinstance(enum, DADict):
                 keys = enum.keys()
             else:
-                keys = list(enum)
+                keys = list(enum)  # type: ignore
                 if any(isinstance(x, str) for x in keys):
                     i2s, s2i = s2i, i2s  # type: ignore
             for k in keys:
-                value = cast(str, enum[k])
+                value = cast(str, enum[k])  # type: ignore
                 i2s[k] = value
                 s2i[value] = k
         Field.__init__(self, name, default, fmt)
@@ -2482,6 +2465,12 @@ class LEShortEnumField(EnumField[int]):
     def __init__(self, name, default, enum):
         # type: (str, int, Union[Dict[int, str], List[str]]) -> None
         EnumField.__init__(self, name, default, enum, "<H")
+
+
+class LELongEnumField(EnumField[int]):
+    def __init__(self, name, default, enum):
+        # type: (str, int, Union[Dict[int, str], List[str]]) -> None
+        EnumField.__init__(self, name, default, enum, "<Q")
 
 
 class ByteEnumField(EnumField[int]):
@@ -2623,7 +2612,7 @@ class ByteEnumKeysField(ByteEnumField):
 
     def randval(self):
         # type: () -> RandEnumKeys
-        return RandEnumKeys(self.i2s)
+        return RandEnumKeys(self.i2s or {})
 
 
 class ShortEnumKeysField(ShortEnumField):
@@ -2631,7 +2620,7 @@ class ShortEnumKeysField(ShortEnumField):
 
     def randval(self):
         # type: () -> RandEnumKeys
-        return RandEnumKeys(self.i2s)
+        return RandEnumKeys(self.i2s or {})
 
 
 class IntEnumKeysField(IntEnumField):
@@ -2639,7 +2628,7 @@ class IntEnumKeysField(IntEnumField):
 
     def randval(self):
         # type: () -> RandEnumKeys
-        return RandEnumKeys(self.i2s)
+        return RandEnumKeys(self.i2s or {})
 
 
 # Little endian fixed length field
@@ -2755,6 +2744,18 @@ class FlagValue(object):
         # type: (int) -> FlagValue
         return self.__class__(self.value | self._fixvalue(other), self.names)
     __ror__ = __or__
+    __add__ = __or__  # + is an alias for |
+
+    def __sub__(self, other):
+        # type: (int) -> FlagValue
+        return self.__class__(
+            self.value & (2 ** len(self.names) - 1 - self._fixvalue(other)),
+            self.names
+        )
+
+    def __xor__(self, other):
+        # type: (int) -> FlagValue
+        return self.__class__(self.value ^ self._fixvalue(other), self.names)
 
     def __lshift__(self, other):
         # type: (int) -> int
@@ -2871,14 +2872,14 @@ class FlagsField(_BitField[Optional[Union[int, FlagValue]]]):
        >>> class FlagsTest2(Packet):
                fields_desc = [
                    FlagsField("flags", 0x2, 16, {
-                       1: "1",  # 1st bit
-                       8: "2"   # 8th bit
+                       0x0001: "A",
+                       0x0008: "B",
                    })
                ]
 
    :param name: field's name
    :param default: default value for the field
-   :param size: number of bits in the field (in bits)
+   :param size: number of bits in the field (in bits). if negative, LE
    :param names: (list or str or dict) label for each flag
        If it's a str or a list, the least Significant Bit tag's name
        is written first.
@@ -2895,9 +2896,9 @@ class FlagsField(_BitField[Optional[Union[int, FlagValue]]]):
         # type: (...) -> None
         # Convert the dict to a list
         if isinstance(names, dict):
-            tmp = ["bit_%d" % i for i in range(size)]
+            tmp = ["bit_%d" % i for i in range(abs(size))]
             for i, v in six.viewitems(names):
-                tmp[i] = v
+                tmp[int(math.floor(math.log(i, 2)))] = v
             names = tmp
         # Store the names as str or list
         self.names = names
@@ -2939,7 +2940,7 @@ used in *2i() and i2*() methods.
         return "None" if x is None else str(self._fixup_val(x))
 
 
-MultiFlagsEntry = collections.namedtuple('MultiFlagEntry', ['short', 'long'])
+MultiFlagsEntry = collections.namedtuple('MultiFlagsEntry', ['short', 'long'])
 
 
 class MultiFlagsField(_BitField[Set[str]]):
@@ -3227,7 +3228,7 @@ class UTCTimeField(Field[float, int]):
     def i2repr(self, pkt, x):
         # type: (Optional[Packet], float) -> str
         if x is None:
-            x = -self.delta
+            x = time.time() - self.delta
         elif self.use_msec:
             x = x / 1e3
         elif self.use_micro:
@@ -3242,7 +3243,18 @@ class UTCTimeField(Field[float, int]):
 
     def i2m(self, pkt, x):
         # type: (Optional[Packet], Optional[float]) -> int
-        return int(x) if x is not None else 0
+        if x is None:
+            x = time.time()
+            if self.use_msec:
+                x = x * 1e3
+            elif self.use_micro:
+                x = x * 1e6
+            elif self.use_nano:
+                x = x * 1e9
+            elif self.custom_scaling:
+                x = x * self.custom_scaling
+            return int(x) - self.delta
+        return int(x)
 
 
 class SecondsIntField(Field[float, int]):
@@ -3541,8 +3553,8 @@ class UUIDField(Field[UUID, bytes]):
                 u = self.m2i(pkt, bytes_encode(x))
             else:
                 u = UUID(plain_str(x))
-        elif isinstance(x, UUID):
-            u = x
+        elif isinstance(x, (UUID, RandUUID)):
+            u = cast(UUID, x)
         else:
             return None
         return u
@@ -3551,6 +3563,26 @@ class UUIDField(Field[UUID, bytes]):
     def randval():
         # type: () -> RandUUID
         return RandUUID()
+
+
+class UUIDEnumField(UUIDField, _EnumField[UUID]):
+    __slots__ = EnumField.__slots__
+
+    def __init__(self, name, default, enum, uuid_fmt=0):
+        # type: (str, Optional[int], Any, int) -> None
+        _EnumField.__init__(self, name, default, enum, "16s")  # type: ignore
+        UUIDField.__init__(self, name, default, uuid_fmt=uuid_fmt)
+
+    def any2i(self, pkt, x):
+        # type: (Optional[Packet], Any) -> UUID
+        return _EnumField.any2i(self, pkt, x)  # type: ignore
+
+    def i2repr(self,
+               pkt,  # type: Optional[Packet]
+               x,  # type: UUID
+               ):
+        # type: (...) -> Any
+        return _EnumField.i2repr(self, pkt, x)
 
 
 class BitExtendedField(Field[Optional[int], bytes]):

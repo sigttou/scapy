@@ -44,13 +44,18 @@ class TestSocket(ObjectPipe[Packet], SuperSocket):
 
     def close(self):
         # type: () -> None
+        global open_test_sockets
         for s in self.paired_sockets:
             try:
                 s.paired_sockets.remove(self)
-            except ValueError:
+            except (ValueError, AttributeError, TypeError):
                 pass
         self.closed = True
         super(TestSocket, self).close()
+        try:
+            open_test_sockets.remove(self)
+        except (ValueError, AttributeError, TypeError):
+            pass
 
     def pair(self, sock):
         # type: (TestSocket) -> None
@@ -86,6 +91,10 @@ class TestSocket(ObjectPipe[Packet], SuperSocket):
                 not s._closed]
         return cast(List[SuperSocket], select_objects(sock, remain))
 
+    def __del__(self):
+        # type: () -> None
+        self.close()
+
 
 class UnstableSocket(TestSocket):
     """
@@ -93,16 +102,38 @@ class UnstableSocket(TestSocket):
     packets on recv.
     """
 
+    def __init__(self, basecls=None):
+        # type: (Optional[Type[Packet]]) -> None
+        super(UnstableSocket, self).__init__(basecls)
+        self.last_rx_was_error = False
+        self.last_tx_was_error = False
+
+    def send(self, x):
+        # type: (Packet) -> int
+        if not self.last_tx_was_error:
+            if random.randint(0, 1000) == 42:
+                self.last_tx_was_error = True
+                print("SOCKET CLOSED")
+                raise OSError("Socket closed")
+        self.last_tx_was_error = False
+        return super(UnstableSocket, self).send(x)
+
     def recv(self, x=MTU):  # type: ignore
         # type: (int) -> Optional[Packet]
-        if random.randint(0, 1000) == 42:
-            raise OSError("Socket closed")
-        if random.randint(0, 1000) == 13:
-            raise Scapy_Exception("Socket closed")
-        if random.randint(0, 1000) == 7:
-            raise ValueError("Socket closed")
-        if random.randint(0, 1000) == 113:
-            return None
+        if not self.last_rx_was_error:
+            if random.randint(0, 1000) == 42:
+                self.last_rx_was_error = True
+                raise OSError("Socket closed")
+            if random.randint(0, 1000) == 13:
+                self.last_rx_was_error = True
+                raise Scapy_Exception("Socket closed")
+            if random.randint(0, 1000) == 7:
+                self.last_rx_was_error = True
+                raise ValueError("Socket closed")
+            if random.randint(0, 1000) == 113:
+                self.last_rx_was_error = True
+                return None
+        self.last_rx_was_error = False
         return super(UnstableSocket, self).recv(x)
 
 
@@ -111,7 +142,5 @@ def cleanup_testsockets():
     """
     Helper function to remove TestSocket objects after a test
     """
-    global open_test_sockets
     for sock in open_test_sockets:
         sock.close()
-        del sock

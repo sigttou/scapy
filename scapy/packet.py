@@ -710,7 +710,7 @@ class Packet(six.with_metaclass(Packet_metaclass,  # type: ignore
         """
         DEV: called right after the current layer is build.
 
-        :param str pkt: the current packet (build by self_buil function)
+        :param str pkt: the current packet (build by self_build function)
         :param str pay: the packet payload (build by do_build_payload function)
         :return: a string of the packet with the payload
         """
@@ -1642,7 +1642,7 @@ class NoPayload(Packet):
         if singl is None:
             cls.__singl__ = singl = Packet.__new__(cls)
             Packet.__init__(singl)
-        return singl  # type: ignore
+        return singl
 
     def __init__(self, *args, **kargs):
         # type: (*Any, **Any) -> None

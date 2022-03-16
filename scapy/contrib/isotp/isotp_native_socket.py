@@ -89,6 +89,25 @@ class ifreq(ctypes.Structure):
 
 
 class ISOTPNativeSocket(SuperSocket):
+    """
+    ISOTPSocket using the can-isotp kernel module
+
+    :param iface: a CANSocket instance or an interface name
+    :param tx_id: the CAN identifier of the sent CAN frames
+    :param rx_id: the CAN identifier of the received CAN frames
+    :param ext_address: the extended address of the sent ISOTP frames
+    :param rx_ext_address: the extended address of the received ISOTP frames
+    :param bs: block size sent in Flow Control ISOTP frames
+    :param stmin: minimum desired separation time sent in
+                  Flow Control ISOTP frames
+    :param padding: If True, pads sending packets with 0x00 which not
+                    count to the payload.
+                    Does not affect receiving packets.
+    :param listen_only: Does not send Flow Control frames if a First Frame is
+                        received
+    :param frame_txtime: Separation time between two CAN frames during send
+    :param basecls: base class of the packets emitted by this socket
+    """
     desc = "read/write packets at a given CAN interface using CAN_ISOTP socket "  # noqa: E501
     can_isotp_options_fmt = "@2I4B"
     can_isotp_fc_options_fmt = "@3B"
@@ -262,14 +281,15 @@ class ISOTPNativeSocket(SuperSocket):
 
     def __init__(self,
                  iface=None,  # type: Optional[Union[str, SuperSocket]]
-                 sid=0,  # type: int
-                 did=0,  # type: int
-                 extended_addr=None,  # type: Optional[int]
-                 extended_rx_addr=None,  # type: Optional[int]
-                 listen_only=False,  # type: bool
+                 tx_id=0,  # type: int
+                 rx_id=0,  # type: int
+                 ext_address=None,  # type: Optional[int]
+                 rx_ext_address=None,  # type: Optional[int]
+                 bs=CAN_ISOTP_DEFAULT_RECV_BS,  # type: int
+                 stmin=CAN_ISOTP_DEFAULT_RECV_STMIN,  # type: int
                  padding=False,  # type: bool
-                 transmit_time=100,  # type: int
-                 stmin=0,  # type: int
+                 listen_only=False,  # type: bool
+                 frame_txtime=CAN_ISOTP_DEFAULT_FRAME_TXTIME,  # type: int
                  basecls=ISOTP  # type: Type[Packet]
                  ):
         # type: (...) -> None
@@ -292,21 +312,21 @@ class ISOTPNativeSocket(SuperSocket):
         self.can_socket = socket.socket(socket.PF_CAN, socket.SOCK_DGRAM,
                                         CAN_ISOTP)
         self.__set_option_flags(self.can_socket,
-                                extended_addr,
-                                extended_rx_addr,
+                                ext_address,
+                                rx_ext_address,
                                 listen_only,
                                 padding,
-                                transmit_time)
+                                frame_txtime)
 
-        self.src = sid
-        self.dst = did
-        self.exsrc = extended_addr
-        self.exdst = extended_rx_addr
+        self.tx_id = tx_id
+        self.rx_id = rx_id
+        self.ext_address = ext_address
+        self.rx_ext_address = rx_ext_address
 
         self.can_socket.setsockopt(SOL_CAN_ISOTP,
                                    CAN_ISOTP_RECV_FC,
                                    self.__build_can_isotp_fc_options(
-                                       stmin=stmin))
+                                       stmin=stmin, bs=bs))
         self.can_socket.setsockopt(SOL_CAN_ISOTP,
                                    CAN_ISOTP_LL_OPTS,
                                    self.__build_can_isotp_ll_options())
@@ -316,7 +336,7 @@ class ISOTPNativeSocket(SuperSocket):
             1
         )
 
-        self.__bind_socket(self.can_socket, self.iface, sid, did)
+        self.__bind_socket(self.can_socket, self.iface, tx_id, rx_id)
         self.ins = self.can_socket
         self.outs = self.can_socket
         if basecls is None:
@@ -359,12 +379,12 @@ class ISOTPNativeSocket(SuperSocket):
         if msg is None:
             return msg
 
-        if hasattr(msg, "src"):
-            msg.src = self.src
-        if hasattr(msg, "dst"):
-            msg.dst = self.dst
-        if hasattr(msg, "exsrc"):
-            msg.exsrc = self.exsrc
-        if hasattr(msg, "exdst"):
-            msg.exdst = self.exdst
+        if hasattr(msg, "tx_id"):
+            msg.tx_id = self.tx_id
+        if hasattr(msg, "rx_id"):
+            msg.rx_id = self.rx_id
+        if hasattr(msg, "ext_address"):
+            msg.ext_address = self.ext_address
+        if hasattr(msg, "rx_ext_address"):
+            msg.rx_ext_address = self.rx_ext_address
         return msg

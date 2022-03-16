@@ -27,7 +27,6 @@ import warnings
 import scapy
 from scapy.error import Scapy_Exception
 from scapy.consts import WINDOWS
-import scapy.modules.six as six
 
 from scapy.modules.six.moves import range
 
@@ -54,7 +53,6 @@ except ImportError:
 _T = TypeVar("_T")
 
 
-@six.add_metaclass(_Generic_metaclass)
 class Gen(Generic[_T]):
     __slots__ = []  # type: List[str]
 
@@ -232,10 +230,7 @@ class Net(Gen[str]):
             return self.__class__(other) in self
         if type(other) is not self.__class__:
             return False
-        return cast(
-            bool,
-            (self.start <= other.start <= other.stop <= self.stop),
-        )
+        return self.start <= other.start <= other.stop <= self.stop
 
 
 class OID(Gen[str]):
@@ -284,7 +279,7 @@ class OID(Gen[str]):
 ######################################
 
 class Packet_metaclass(_Generic_metaclass):
-    def __new__(cls,  # type: ignore
+    def __new__(cls,
                 name,  # type: str
                 bases,  # type: Tuple[type, ...]
                 dct  # type: Dict[str, Any]
@@ -337,24 +332,39 @@ class Packet_metaclass(_Generic_metaclass):
                 dct["_%s" % attr] = dct.pop(attr)
             except KeyError:
                 pass
-        newcls = type.__new__(cls, name, bases, dct)
+        # Build and inject signature
+        try:
+            # Py3 only
+            import inspect
+            dct["__signature__"] = inspect.Signature([
+                inspect.Parameter("_pkt", inspect.Parameter.POSITIONAL_ONLY),
+            ] + [
+                inspect.Parameter(f.name,
+                                  inspect.Parameter.KEYWORD_ONLY,
+                                  default=f.default)
+                for f in dct["fields_desc"]
+            ])
+        except (ImportError, AttributeError, KeyError):
+            pass
+        newcls = cast('Type[scapy.packet.Packet]',
+                      type.__new__(cls, name, bases, dct))
         # Note: below can't be typed because we use attributes
         # created dynamically..
-        newcls.__all_slots__ = set(  # type: ignore
+        newcls.__all_slots__ = set(
             attr
             for cls in newcls.__mro__ if hasattr(cls, "__slots__")
             for attr in cls.__slots__
         )
 
-        newcls.aliastypes = (  # type: ignore
+        newcls.aliastypes = (
             [newcls] + getattr(newcls, "aliastypes", [])
         )
 
         if hasattr(newcls, "register_variant"):
-            newcls.register_variant()  # type: ignore
-        for f in newcls.fields_desc:  # type: ignore
-            if hasattr(f, "register_owner"):
-                f.register_owner(newcls)
+            newcls.register_variant()
+        for _f in newcls.fields_desc:
+            if hasattr(_f, "register_owner"):
+                _f.register_owner(newcls)
         if newcls.__name__[0] != "_":
             from scapy import config
             config.conf.layers.register(newcls)
@@ -393,7 +403,7 @@ class Packet_metaclass(_Generic_metaclass):
 # Note: see compat.py for an explanation
 
 class Field_metaclass(_Generic_metaclass):
-    def __new__(cls,  # type: ignore
+    def __new__(cls,
                 name,  # type: str
                 bases,  # type: Tuple[type, ...]
                 dct  # type: Dict[str, Any]
@@ -401,7 +411,7 @@ class Field_metaclass(_Generic_metaclass):
         # type: (...) -> Type[scapy.fields.Field[Any, Any]]
         dct.setdefault("__slots__", [])
         newcls = super(Field_metaclass, cls).__new__(cls, name, bases, dct)
-        return newcls
+        return newcls  # type: ignore
 
 
 PacketList_metaclass = Field_metaclass

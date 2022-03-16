@@ -95,7 +95,8 @@ def select_objects(inputs, remain):
     if natives:
         results = results.union(set(select.select(natives, [], [], remain)[0]))
     if events:
-        remainms = int((remain or 0) * 1000)
+        # 0xFFFFFFFF = INFINITE
+        remainms = int(remain * 1000 if remain is not None else 0xFFFFFFFF)
         if len(events) == 1:
             res = ctypes.windll.kernel32.WaitForSingleObject(
                 ctypes.c_void_p(events[0].fileno()),
@@ -532,9 +533,11 @@ class _ATMT_to_supersocket:
 
 
 class Automaton_metaclass(type):
-    def __new__(cls, name, bases, dct):  # type: ignore
+    def __new__(cls, name, bases, dct):
         # type: (str, Tuple[Any], Dict[str, Any]) -> Type[Automaton]
-        cls = super(Automaton_metaclass, cls).__new__(cls, name, bases, dct)
+        cls = super(Automaton_metaclass, cls).__new__(  # type: ignore
+            cls, name, bases, dct
+        )
         cls.states = {}
         cls.recv_conditions = {}    # type: Dict[str, List[_StateWrapper]]
         cls.conditions = {}         # type: Dict[str, List[_StateWrapper]]
@@ -605,6 +608,14 @@ class Automaton_metaclass(type):
                         ioev.atmt_as_supersocket,
                         ioev.atmt_ioname,
                         cast(Type["Automaton"], cls)))
+
+        # Inject signature
+        try:
+            import inspect
+            cls.__signature__ = inspect.signature(cls.parse_args)  # type: ignore  # noqa: E501
+        except (ImportError, AttributeError):
+            pass
+
         return cast(Type["Automaton"], cls)
 
     def build_graph(self):
@@ -989,7 +1000,7 @@ class Automaton:
                 self.cmdout.send(c)
             except Exception as e:
                 exc_info = sys.exc_info()
-                self.debug(3, "Transferring exception from tid=%i:\n%s" % (self.threadid, traceback.format_exception(*exc_info)))  # noqa: E501
+                self.debug(3, "Transferring exception from tid=%i:\n%s" % (self.threadid, "".join(traceback.format_exception(*exc_info))))  # noqa: E501
                 m = Message(type=_ATMT_Command.EXCEPTION, exception=e, exc_info=exc_info)  # noqa: E501
                 self.cmdout.send(m)
             self.debug(3, "Stopping control thread (tid=%i)" % self.threadid)
@@ -1172,15 +1183,17 @@ class Automaton:
                 for fd in r:
                     fd.recv()
 
-    def stop(self):
-        # type: () -> None
+    def stop(self, wait=True):
+        # type: (bool) -> None
         self.cmdin.send(Message(type=_ATMT_Command.STOP))
-        self._flush_inout()
+        if wait:
+            self._flush_inout()
 
-    def forcestop(self):
-        # type: () -> None
+    def forcestop(self, wait=True):
+        # type: (bool) -> None
         self.cmdin.send(Message(type=_ATMT_Command.FORCESTOP))
-        self._flush_inout()
+        if wait:
+            self._flush_inout()
 
     def restart(self, *args, **kargs):
         # type: (Any, Any) -> None

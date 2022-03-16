@@ -179,24 +179,20 @@ def scan(sock,  # type: SuperSocket
     for value in scan_range:
         if noise_ids and value in noise_ids:
             continue
-
+        sock.send(get_isotp_packet(value, False, extended_can_id))
         sock.sniff(prn=lambda pkt: get_isotp_fc(value, return_values,
                                                 noise_ids, False, pkt,
                                                 verbose),
-                   timeout=sniff_time,
-                   started_callback=lambda: sock.send(
-                       get_isotp_packet(value, False, extended_can_id)))
+                   timeout=sniff_time, store=False)
 
     cleaned_ret_val = dict()  # type: Dict[int, Tuple[Packet, int]]
-
     for tested_id in return_values.keys():
         for value in range(max(0, tested_id - 2), tested_id + 2, 1):
+            sock.send(get_isotp_packet(value, False, extended_can_id))
             sock.sniff(prn=lambda pkt: get_isotp_fc(value, cleaned_ret_val,
                                                     noise_ids, False, pkt,
                                                     verbose),
-                       timeout=sniff_time * 10,
-                       started_callback=lambda: sock.send(
-                           get_isotp_packet(value, False, extended_can_id)))
+                       timeout=sniff_time * 10, store=False)
 
     return cleaned_ret_val
 
@@ -240,12 +236,11 @@ def scan_extended(sock,  # type: SuperSocket
         id_list = []  # type: List[int]
         r = list(extended_scan_range)
         for ext_isotp_id in range(r[0], r[-1], scan_block_size):
+            send_multiple_ext(sock, ext_isotp_id, pkt, scan_block_size)
             sock.sniff(prn=lambda p: get_isotp_fc(ext_isotp_id, id_list,
                                                   noise_ids, True, p,
                                                   verbose),
-                       timeout=sniff_time * 3,
-                       started_callback=lambda: send_multiple_ext(
-                           sock, ext_isotp_id, pkt, scan_block_size))
+                       timeout=sniff_time * 3, store=False)
             # sleep to prevent flooding
             time.sleep(sniff_time)
 
@@ -256,12 +251,12 @@ def scan_extended(sock,  # type: SuperSocket
                                 min(ext_isotp_id + scan_block_size + 2, 256)):
                 pkt.extended_address = ext_id
                 full_id = (value << 8) + ext_id
+                sock.send(pkt)
                 sock.sniff(prn=lambda pkt: get_isotp_fc(full_id,
                                                         return_values,
                                                         noise_ids, True,
                                                         pkt, verbose),
-                           timeout=sniff_time * 2,
-                           started_callback=lambda: sock.send(pkt))
+                           timeout=sniff_time * 2, store=False)
 
     return return_values
 
@@ -417,8 +412,8 @@ def generate_code_output(found_packets, can_interface="iface",
             send_id = pack // 256
             send_ext = pack - (send_id * 256)
             ext_id = orb(found_packets[pack][0].data[0])
-            result += "ISOTPSocket(%s, sid=0x%x, did=0x%x, padding=%s, " \
-                      "extended_addr=0x%x, extended_rx_addr=0x%x, " \
+            result += "ISOTPSocket(%s, tx_id=0x%x, rx_id=0x%x, padding=%s, " \
+                      "ext_address=0x%x, rx_ext_address=0x%x, " \
                       "basecls=ISOTP)\n" % \
                       (can_interface, send_id,
                        int(found_packets[pack][0].identifier),
@@ -427,7 +422,7 @@ def generate_code_output(found_packets, can_interface="iface",
                        ext_id)
 
         else:
-            result += "ISOTPSocket(%s, sid=0x%x, did=0x%x, padding=%s, " \
+            result += "ISOTPSocket(%s, tx_id=0x%x, rx_id=0x%x, padding=%s, " \
                       "basecls=ISOTP)\n" % \
                       (can_interface, pack,
                        int(found_packets[pack][0].identifier),
@@ -463,15 +458,15 @@ def generate_isotp_list(found_packets,  # type: Dict[int, Tuple[Packet, int]]
             source_id = pack >> 8
             source_ext = int(pack - (source_id * 256))
             dest_ext = orb(pkt.data[0])
-            socket_list.append(ISOTPSocket(can_interface, sid=source_id,
-                                           extended_addr=source_ext,
-                                           did=dest_id,
-                                           extended_rx_addr=dest_ext,
+            socket_list.append(ISOTPSocket(can_interface, tx_id=source_id,
+                                           ext_address=source_ext,
+                                           rx_id=dest_id,
+                                           rx_ext_address=dest_ext,
                                            padding=pad,
                                            basecls=ISOTP))
         else:
             source_id = pack
-            socket_list.append(ISOTPSocket(can_interface, sid=source_id,
-                                           did=dest_id, padding=pad,
+            socket_list.append(ISOTPSocket(can_interface, tx_id=source_id,
+                                           rx_id=dest_id, padding=pad,
                                            basecls=ISOTP))
     return socket_list
